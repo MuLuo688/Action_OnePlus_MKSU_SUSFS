@@ -64,9 +64,9 @@ jobs:
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
         with:
-          root-reserve-mb: 8192
+          root-reserve-mb: 16384
           temp-reserve-mb: 2048
-          swap-size-mb: 8192
+          swap-size-mb: 32768
           remove-dotnet: 'true'
           remove-android: 'true'
           remove-haskell: 'true'
@@ -80,7 +80,7 @@ jobs:
       - name: Install dependencies
         run: |
          sudo apt update && sudo apt upgrade -y
-         sudo apt install -y python3 git curl
+         sudo apt install -y python3 git curl clang lld llvm libbpf-dev bpftool gcc-aarch64-linux-gnu
 
       - name: Install repo tool
         run: |
@@ -93,6 +93,15 @@ jobs:
          mkdir kernel_workspace && cd kernel_workspace
          repo init -u https://github.com/OnePlusOSS/kernel_manifest.git -b refs/heads/oneplus/${{ github.event.inputs.CPU }} -m ${{ github.event.inputs.FEIL }}.xml --depth=1
          repo sync
+         cd kernel_platform
+         git remote add sched_ext https://github.com/sched-ext/sched_ext.git
+         git fetch sched_ext
+         git merge --no-ff sched_ext/main -m "Merge sched_ext upstream"
+         if git status --porcelain | grep -q '^UU'; then
+           echo "合并冲突需要手动解决！"
+           exit 1
+         fi
+         cd ..
          rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
          rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
          sed -i 's/ -dirty//g' kernel_platform/common/scripts/setlocalversion
@@ -170,6 +179,16 @@ jobs:
       - name: Add SUSFS Configuration Settings
         run: |
           cd kernel_workspace/kernel_platform
+# sched_ext核心配置
+          echo "CONFIG_SCHED_CLASS_EXT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_BPF_SYSCALL=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_BPF_JIT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_DEBUG_INFO_BTF=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_EXT_SCHED_SCX_SIMPLE=y" >> ./common/arch/arm64/configs/gki_defconfig
+   # 原始Clang配置
+          echo "CONFIG_CC_IS_CLANG=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_CLANG_VERSION=170000" >> ./common/arch/arm64/configs/gki_defconfig
+
           # Add KSU configuration settings
           echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -236,6 +255,20 @@ jobs:
       - name: Build kernel
         run: |
           cd kernel_workspace
+          export ARCH=arm64
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CC=clang
+          export LD=ld.lld
+          export LLVM=1
+          export LLVM_IAS=1
+          export KCFLAGS="-Wno-bitwise-conditional-parentheses"
+
+          ./kernel_platform/build_with_bazel.py -t ${{ github.event.inputs.CPUD }} gki \
+            --action_env=KSU_VERSION \
+            --config=local \
+            --compiler=clang \
+            --kbuild_opt="CC=${CC}" \
+            --kbuild_opt="LD=${LD}"
           if [[ "${{ github.event.inputs.KERNEL_VERSION }}" == "6.1" || "${{ github.event.inputs.KERNEL_VERSION }}" == "6.6" ]]; then
             ./kernel_platform/build_with_bazel.py -t ${{ github.event.inputs.CPUD }} gki --action_env=KSU_VERSION
           else
